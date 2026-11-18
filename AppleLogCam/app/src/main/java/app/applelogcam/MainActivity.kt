@@ -57,7 +57,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         setTextColor(Color.WHITE)
         setBackgroundColor(Color.argb(150, 0, 0, 0))
         isAllCaps = false
-        layoutParams = LinearLayout.LayoutParams(dp(130), dp(48)).apply { topMargin = dp(8) }
+        maxLines = 1
+        layoutParams = LinearLayout.LayoutParams(dp(170), dp(48)).apply { topMargin = dp(8) }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -94,7 +95,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
                 text = if (monitorLog) "Monitor: Log" else "Monitor: 709"
             }
         }
-        manualBtn = styledButton("Exposição: auto").apply {
+        manualBtn = styledButton("Exp: auto").apply {
             setOnClickListener { setManual(!manual) }
         }
         side.addView(recBtn)
@@ -166,7 +167,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
 
     private fun setManual(enabled: Boolean) {
         manual = enabled
-        manualBtn.text = if (enabled) "Exposição: manual" else "Exposição: auto"
+        manualBtn.text = if (enabled) "Exp: manual" else "Exp: auto"
         manualPanel.visibility = if (enabled) View.VISIBLE else View.GONE
         pushManual()
     }
