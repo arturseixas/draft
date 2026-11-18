@@ -406,7 +406,7 @@ class OverlayView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun clearFocus() {
+    fun hideFocus() {
         focusVisible = false
         focusLocked = false
         invalidate()

@@ -522,7 +522,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         ui.removeCallbacks(lockRunnable)
         controls = controls.copy(focusMode = CamControls.FOCUS_CONTINUOUS, aeLock = false)
         engine?.setRegion(null, false, controls)
-        overlay.clearFocus()
+        overlay.hideFocus()
         overlay.flash("AF-C · MEDIÇÃO CENTRAL")
         refreshChips()
     }
@@ -818,7 +818,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         lastIso = 0
         lastExp = 0L
         closeDial()
-        overlay.clearFocus()
+        overlay.hideFocus()
         flipBtn.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
         reconfigure()
     }
