@@ -3,7 +3,7 @@
 Câmera de cinema para o Pixel 10 Pro (Kotlin, Camera2, sem dependências externas). Grava HEVC Main10 em Apple Log, HLG ou Rec.709.
 
 APK de debug: https://github.com/arturseixas/draft/releases/download/apple-log-cam-latest/AppleLogCam-debug.apk
-(o GitHub Actions refaz o APK a cada push na branch `apple-log-cam`).
+(o GitHub Actions refaz o APK a cada push na branch `apple-log-cam`). A chave de debug fica em `keystore/`, então cada APK novo instala por cima do anterior.
 
 ## Funções
 
@@ -15,6 +15,9 @@ APK de debug: https://github.com/arturseixas/draft/releases/download/apple-log-c
 - Foco: AF contínuo, toque para focar e medir, toque longo trava AE/AF, toque duplo volta ao AF-C, foco manual com lupa 3× e peaking automáticos.
 - Monitor: LUT Rec.709 ligada ou desligada, zebra (70 a 100%), focus peaking, false color, grade, linhas de corte 2.39, 1.85, 4:3, 1:1 e 9:16.
 - Imagem: estabilização, nitidez, redução de ruído, anti-flicker 50/60 Hz, lanterna.
+- Vertical: botão 16:9 / 9:16 trava a tela em pé e grava 2160x3840 com o sensor inteiro (sem recorte).
+- LUTs: importa .cube 3D (até 129 pontos), escolhe no menu e aplica só no monitor ou também no arquivo (aí o clipe sai marcado como Rec.709). A LUT recebe o sinal do perfil escolhido.
+- Galeria: pastas dentro de Movies/AppleLogCam, escolha da pasta de gravação, renomear e apagar pastas, seleção múltipla para mover, compartilhar e apagar, player embutido.
 - Gravação: timecode, medidor de áudio L/R, nome de rolo e clipe (A001C001), miniatura do último clipe, botões de volume para gravar, minutos livres e bateria na tela.
 
 ## Como funciona o Apple Log aqui
@@ -29,6 +32,7 @@ O MediaCodec não tem rótulo para Apple Log, então o arquivo sai marcado como 
 - `CaptureEngine.kt`: loop de frames, rotação, gravação e MediaStore.
 - `LogRenderer.kt`: shader de entrada (HLG/SDR) para Apple Log, HLG ou 709, e as ferramentas do monitor.
 - `MainActivity.kt`: interface e gestos. `Views.kt`: régua, chips, botão de gravar, overlay, medidor e seletor de lentes.
+- `Lut.kt`: leitura de .cube e LUTs importadas. `Gallery.kt`: galeria, pastas e player.
 - `Settings.kt`: preferências salvas. `VideoEncoder.kt`, `AudioEncoder.kt`, `MuxerSink.kt`, `EglCore.kt`: codificação e EGL.
 
 Logs no logcat com a tag `AppleLogCam`.
