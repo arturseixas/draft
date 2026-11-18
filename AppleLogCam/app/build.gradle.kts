@@ -11,11 +11,25 @@ android {
         applicationId = "app.applelogcam"
         minSdk = 34          // Pixel 10 Pro vem com Android 16; 34 dá acesso a tudo que o app usa
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 3
+        versionName = "0.3"
+    }
+
+    // Chave de debug fixa no repositório: sem ela cada build do GitHub Actions gera uma chave nova
+    // e o Android recusa instalar a atualização por cima.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("../keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
         }

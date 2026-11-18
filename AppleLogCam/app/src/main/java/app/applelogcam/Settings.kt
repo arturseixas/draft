@@ -30,6 +30,11 @@ class CamSettings(private val prefs: SharedPreferences) {
     var shutterAngle = prefs.getBoolean("shutterAngle", true)
     var clip = prefs.getInt("clip", 1)
     var lastClip: String? = prefs.getString("lastClip", null)
+    var vertical = prefs.getBoolean("vertical", false)
+    var lutName: String? = prefs.getString("lutName", null)
+    var lutBurn = prefs.getBoolean("lutBurn", false)
+    var folders: Set<String> = HashSet(prefs.getStringSet("folders", emptySet()) ?: emptySet())
+    var recordFolder: String = prefs.getString("recordFolder", "") ?: ""
 
     fun save() {
         prefs.edit()
@@ -53,6 +58,11 @@ class CamSettings(private val prefs: SharedPreferences) {
             .putBoolean("shutterAngle", shutterAngle)
             .putInt("clip", clip)
             .putString("lastClip", lastClip)
+            .putBoolean("vertical", vertical)
+            .putString("lutName", lutName)
+            .putBoolean("lutBurn", lutBurn)
+            .putStringSet("folders", HashSet(folders))
+            .putString("recordFolder", recordFolder)
             .apply()
     }
 }

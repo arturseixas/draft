@@ -2,6 +2,8 @@ package app.applelogcam
 
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.opengl.GLES30
+import android.util.Half
 import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -32,6 +34,8 @@ class LogRenderer {
         var peaking = false
         var falseColor = false
         var mag = 1f
+        var useLut = false
+        var lutIn = OUT_APPLE_LOG
     }
 
     companion object {
@@ -118,6 +122,11 @@ uniform int uPeaking;
 uniform int uFalseColor;
 uniform vec2 uTexel;
 uniform float uClipStop;
+uniform mediump sampler3D uLut;
+uniform int uUseLut;
+uniform int uLutIn;
+uniform vec2 uLutDomain;
+uniform vec2 uLutScale;
 out vec4 fragColor;
 
 const float HLG_A = 0.17883277;
@@ -199,9 +208,15 @@ vec3 falseColor(vec3 refl, vec3 disp) {
     return vec3(g);
 }
 
+// A LUT recebe o sinal já codificado no perfil (ex.: Apple Log) e devolve a cor final.
+vec3 applyLut(vec3 c) {
+    c = clamp((c - uLutDomain.x) / (uLutDomain.y - uLutDomain.x), 0.0, 1.0);
+    return texture(uLut, c * uLutScale.x + uLutScale.y).rgb;
+}
+
 void main() {
     vec3 refl = sceneLinear(readSignal(vTex));
-    vec3 col = encode(refl, uOut);
+    vec3 col = (uUseLut == 1) ? applyLut(encode(refl, uLutIn)) : encode(refl, uOut);
     if (uTools == 1) {
         vec3 v = view709(refl);
         if (uFalseColor == 1) col = falseColor(refl, v);
@@ -223,7 +238,8 @@ void main() {
 
         private val UNIFORMS = listOf(
             "uTexMatrix", "uTex", "uMag", "uMagCenter", "uFullRange", "uCodeMax", "uKr", "uKb",
-            "uOut", "uInputHlg", "uTools", "uZebra", "uPeaking", "uFalseColor", "uTexel", "uClipStop"
+            "uOut", "uInputHlg", "uTools", "uZebra", "uPeaking", "uFalseColor", "uTexel", "uClipStop",
+            "uLut", "uUseLut", "uLutIn", "uLutDomain", "uLutScale"
         )
     }
 
@@ -235,6 +251,13 @@ void main() {
     private var locPos = 0
     private var locTex = 0
     private val loc = HashMap<String, Int>()
+
+    private var lutTex = 0
+    private var lutSize = 1
+    private var lutMin = 0f
+    private var lutMax = 1f
+    var hasLut = false
+        private set
 
     private val posBuf: FloatBuffer = floatBuffer(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f))
     private val texBuf: FloatBuffer = floatBuffer(floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f))
@@ -261,6 +284,13 @@ void main() {
             }
         }
         if (!built) build(FRAG_HEAD_OES)
+
+        // Textura 3D sempre presente na unidade 1 (vazia até importar uma LUT).
+        val lt = IntArray(1)
+        GLES20.glGenTextures(1, lt, 0)
+        lutTex = lt[0]
+        uploadLut(1, FloatArray(3))
+        hasLut = false
         Log.i(TAG, "Renderer: ${if (usingYuvTarget) "EXT_YUV_target" else "samplerExternalOES"}")
     }
 
@@ -304,9 +334,43 @@ void main() {
 
     private fun u(name: String) = loc[name] ?: -1
 
+    fun setLut(lut: CubeLut?) {
+        if (lut == null) {
+            hasLut = false
+            return
+        }
+        uploadLut(lut.size, lut.data)
+        lutMin = lut.domainMin
+        lutMax = lut.domainMax
+        hasLut = true
+    }
+
+    private fun uploadLut(n: Int, data: FloatArray) {
+        val buf = ByteBuffer.allocateDirect(data.size * 2).order(ByteOrder.nativeOrder())
+        for (v in data) buf.putShort(Half.toHalf(v))
+        buf.position(0)
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, lutTex)
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES30.GL_TEXTURE_3D, GLES30.GL_TEXTURE_WRAP_R, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
+        GLES30.glTexImage3D(GLES30.GL_TEXTURE_3D, 0, GLES30.GL_RGB16F, n, n, n, 0, GLES20.GL_RGB, GLES30.GL_HALF_FLOAT, buf)
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, 0)
+        lutSize = n
+    }
+
     fun draw(texMatrix: FloatArray, input: Input, p: Params, vx: Int, vy: Int, vw: Int, vh: Int) {
         GLES20.glViewport(vx, vy, vw, vh)
         GLES20.glUseProgram(program)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+        GLES20.glBindTexture(GLES30.GL_TEXTURE_3D, lutTex)
+        GLES20.glUniform1i(u("uLut"), 1)
+        GLES20.glUniform1i(u("uUseLut"), if (p.useLut && hasLut) 1 else 0)
+        GLES20.glUniform1i(u("uLutIn"), p.lutIn)
+        GLES20.glUniform2f(u("uLutDomain"), lutMin, lutMax)
+        GLES20.glUniform2f(u("uLutScale"), (lutSize - 1f) / lutSize, 0.5f / lutSize)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
         GLES20.glUniform1i(u("uTex"), 0)
@@ -338,7 +402,7 @@ void main() {
 
     fun release() {
         if (program != 0) GLES20.glDeleteProgram(program)
-        GLES20.glDeleteTextures(1, intArrayOf(texId), 0)
+        GLES20.glDeleteTextures(2, intArrayOf(texId, lutTex), 0)
         program = 0
     }
 

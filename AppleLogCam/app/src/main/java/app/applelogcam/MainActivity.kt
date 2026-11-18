@@ -3,8 +3,11 @@ package app.applelogcam
 import android.Manifest
 import android.animation.ValueAnimator
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -33,6 +36,7 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -75,6 +79,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             WbOpt("7500K", CameraMetadata.CONTROL_AWB_MODE_SHADE)
         )
         private const val FOCUS_STEPS = 48
+        private const val REQ_LUT = 30
+        private const val REQ_MEDIA = 2
     }
 
     private lateinit var settings: CamSettings
@@ -123,6 +129,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
     private val toggles = LinkedHashMap<String, TextView>()
     private lateinit var meter: AudioMeter
     private lateinit var settingsPanel: FrameLayout
+    private lateinit var vertBtn: TextView
+    private lateinit var leftGap: View
+    private lateinit var leftSpacer: View
+    private lateinit var micLabel: TextView
+    private lateinit var gallery: GalleryPanel
+    private lateinit var lutStore: LutStore
+    private var currentLut: CubeLut? = null
+    private var barsPortrait: Boolean? = null
+    private var askedMedia = false
     private lateinit var scaleDetector: ScaleGestureDetector
     private lateinit var gestureDetector: GestureDetector
 
@@ -133,15 +148,19 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         settings = CamSettings(getSharedPreferences("cam", MODE_PRIVATE))
         controls = baseControls()
+        lutStore = LutStore(this)
+        applyOrientation()
         createGestures()
         buildUi()
         setContentView(root)
         pushMonitor()
         refreshAll()
         loadThumb()
+        loadSelectedLut()
 
         onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
             when {
+                gallery.isOpen -> gallery.back()
                 settingsPanel.visibility == View.VISIBLE -> closeSettings()
                 openParam != null -> closeDial()
                 else -> finish()
@@ -182,6 +201,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (gallery.isOpen) return super.onKeyDown(keyCode, event)
         if (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
             keyCode == KeyEvent.KEYCODE_CAMERA
         ) {
@@ -195,6 +215,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_MEDIA) {
+            gallery.reload()
+            return
+        }
         if (!granted(Manifest.permission.CAMERA)) {
             overlay.flash("SEM PERMISSÃO DE CÂMERA")
             return
@@ -221,6 +245,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         if (engine != null || !granted(Manifest.permission.CAMERA)) return
         val e = CaptureEngine(this, this)
         engine = e
+        e.setLut(currentLut)
         pushMonitor()
         e.start(s, settings.front, settings.height, settings.fps, controls)
     }
@@ -350,7 +375,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             setOnClickListener { openSettings() }
         }
         leftBar.addView(menu)
-        leftBar.addView(View(this), LinearLayout.LayoutParams(1, dpi(10)))
+        leftGap = View(this)
+        leftBar.addView(leftGap, LinearLayout.LayoutParams(1, dpi(10)))
         for ((key, label) in listOf(
             "lut" to "LUT", "zebra" to "ZEBRA", "peak" to "PEAK", "false" to "FALSE", "grid" to "GRID", "torch" to "TORCH"
         )) {
@@ -365,10 +391,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             toggles[key] = t
             leftBar.addView(t)
         }
-        leftBar.addView(View(this), LinearLayout.LayoutParams(1, 0, 1f))
+        leftSpacer = View(this)
+        leftBar.addView(leftSpacer, LinearLayout.LayoutParams(1, 0, 1f))
         meter = AudioMeter(this)
         leftBar.addView(meter)
-        leftBar.addView(text("MIC", 9f, Ui.DIM, Ui.COND, 0.2f), LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dpi(3) })
+        micLabel = text("MIC", 9f, Ui.DIM, Ui.COND, 0.2f)
+        leftBar.addView(micLabel, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dpi(3) })
         root.addView(leftBar, FrameLayout.LayoutParams(dpi(84), MATCH))
 
         // ---- barra lateral direita: último clipe, gravar, trocar câmera
@@ -382,7 +410,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             background = outline(10f, Ui.FAINT, 0xFF1A1918.toInt())
             clipToOutline = true
             contentDescription = "Último clipe"
-            setOnClickListener { openLastClip() }
+            setOnClickListener { openGallery() }
         }
         rightBar.addView(thumb, LinearLayout.LayoutParams(dpi(46), dpi(46)).apply { bottomMargin = dpi(22) })
         recordButton = RecordButton(this).apply { setOnClickListener { toggleRecord() } }
@@ -394,6 +422,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             setOnClickListener { flipCamera() }
         }
         rightBar.addView(flipBtn, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dpi(22) })
+        vertBtn = text("16:9", 11f, Ui.CREAM, Ui.MONO_BOLD, 0.06f).apply {
+            gravity = Gravity.CENTER
+            background = outline(6f)
+            setPadding(dpi(10), dpi(8), dpi(10), dpi(8))
+            setOnClickListener { toggleVertical() }
+        }
+        rightBar.addView(vertBtn, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dpi(10) })
         root.addView(rightBar, FrameLayout.LayoutParams(dpi(96), MATCH, Gravity.END))
 
         // ---- menu de configurações (cobre o quadro)
@@ -403,6 +438,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             isClickable = true
         }
         root.addView(settingsPanel, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        // ---- galeria (tela cheia)
+        gallery = GalleryPanel(this, settings, { overlay.flash(it) }) {
+            loadThumb()
+            refreshClipLabel()
+            refreshStatus()
+        }
+        root.addView(gallery, FrameLayout.LayoutParams(MATCH, MATCH))
 
         root.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutChrome() }
     }
@@ -432,11 +475,90 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         val ti = t.roundToInt()
         val cwi = cw.roundToInt()
         val chi = ch.roundToInt()
+        val portrait = h > w
+        arrangeBars(portrait)
         place(topBar, li, ti, cwi, WRAP, Gravity.TOP or Gravity.START)
         place(bottomStack, li, h - (ti + chi), cwi, WRAP, Gravity.BOTTOM or Gravity.START)
-        place(leftBar, 0, 0, maxOf(li, dpi(84)), MATCH, Gravity.TOP or Gravity.START)
-        place(rightBar, 0, 0, maxOf(w - (li + cwi), dpi(96)), MATCH, Gravity.TOP or Gravity.END)
+        if (portrait) {
+            // Vertical: ferramentas numa faixa em cima, gravar numa faixa embaixo.
+            place(leftBar, 0, 0, MATCH, maxOf(ti, dpi(64)), Gravity.TOP or Gravity.START)
+            place(rightBar, 0, 0, MATCH, maxOf(h - (ti + chi), dpi(104)), Gravity.BOTTOM or Gravity.START)
+        } else {
+            place(leftBar, 0, 0, maxOf(li, dpi(84)), MATCH, Gravity.TOP or Gravity.START)
+            place(rightBar, 0, 0, maxOf(w - (li + cwi), dpi(96)), MATCH, Gravity.TOP or Gravity.END)
+        }
         place(settingsPanel, li, ti, cwi, chi, Gravity.TOP or Gravity.START)
+    }
+
+    private fun lpl(w: Int, h: Int, l: Int = 0, t: Int = 0, r: Int = 0, b: Int = 0, weight: Float = 0f) =
+        LinearLayout.LayoutParams(w, h, weight).apply { setMargins(l, t, r, b) }
+
+    /** Troca a disposição das barras laterais entre paisagem (colunas) e retrato (faixas). */
+    private fun arrangeBars(portrait: Boolean) {
+        if (barsPortrait == portrait) return
+        barsPortrait = portrait
+        val o = if (portrait) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        leftBar.orientation = o
+        rightBar.orientation = o
+        topBar.orientation = if (portrait) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        if (portrait) {
+            leftBar.gravity = Gravity.CENTER_VERTICAL
+            leftBar.setPadding(dpi(12), dpi(6), dpi(12), dpi(6))
+            leftGap.layoutParams = lpl(dpi(6), 1)
+            leftSpacer.layoutParams = lpl(0, 1, weight = 1f)
+            micLabel.visibility = View.GONE
+            for (t in toggles.values) t.setPadding(dpi(5), dpi(7), dpi(5), dpi(7))
+            thumb.layoutParams = lpl(dpi(46), dpi(46), r = dpi(30))
+            flipBtn.layoutParams = lpl(WRAP, WRAP, l = dpi(30))
+            vertBtn.layoutParams = lpl(WRAP, WRAP, l = dpi(10))
+        } else {
+            leftBar.gravity = Gravity.CENTER_HORIZONTAL
+            leftBar.setPadding(0, dpi(14), 0, dpi(12))
+            leftGap.layoutParams = lpl(1, dpi(10))
+            leftSpacer.layoutParams = lpl(1, 0, weight = 1f)
+            micLabel.visibility = View.VISIBLE
+            for (t in toggles.values) t.setPadding(dpi(6), dpi(7), dpi(6), dpi(7))
+            thumb.layoutParams = lpl(dpi(46), dpi(46), b = dpi(22))
+            flipBtn.layoutParams = lpl(WRAP, WRAP, t = dpi(22))
+            vertBtn.layoutParams = lpl(WRAP, WRAP, t = dpi(10))
+        }
+    }
+
+    private fun applyOrientation() {
+        requestedOrientation = if (settings.vertical) ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // A rotação da câmera chega pelo DisplayListener; refaz o layout depois que ela muda.
+        for (delay in longArrayOf(250L, 700L)) {
+            ui.postDelayed({
+                chromeKey = ""
+                layoutChrome()
+            }, delay)
+        }
+    }
+
+    private fun toggleVertical() {
+        if (recording) {
+            overlay.flash("PARE A GRAVAÇÃO PARA MUDAR O FORMATO")
+            return
+        }
+        vertBtn.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+        settings.vertical = !settings.vertical
+        settings.save()
+        closeDial()
+        overlay.hideFocus()
+        applyOrientation()
+        refreshVertBtn()
+        overlay.flash(if (settings.vertical) "VERTICAL 9:16" else "HORIZONTAL 16:9")
+    }
+
+    private fun refreshVertBtn() {
+        vertBtn.text = if (settings.vertical) "9:16" else "16:9"
+        vertBtn.setTextColor(if (settings.vertical) Ui.AMBER else Ui.CREAM)
+        vertBtn.background = outline(6f, if (settings.vertical) Ui.AMBER else Ui.FAINT)
     }
 
     private fun place(v: View, x: Int, y: Int, width: Int, height: Int, gravity: Int) {
@@ -835,7 +957,12 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         val stamp = SimpleDateFormat("yyMMdd_HHmmss", Locale.US).format(Date())
         val name = clipName() + "_" + stamp
         e.startRecording(
-            RecordConfig(name, settings.profile, settings.bitrateMbps * 1_000_000, settings.audio && granted(Manifest.permission.RECORD_AUDIO))
+            RecordConfig(
+                name, settings.profile, settings.bitrateMbps * 1_000_000,
+                settings.audio && granted(Manifest.permission.RECORD_AUDIO),
+                settings.recordFolder,
+                settings.lutBurn && currentLut != null
+            )
         )
     }
 
@@ -847,6 +974,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         recLabel.setTextColor(if (on) Ui.RED else Ui.DIM)
         recDot.setTextColor(if (on) Ui.RED else Ui.DIM)
         flipBtn.alpha = if (on) 0.35f else 1f
+        vertBtn.alpha = if (on) 0.35f else 1f
         chips[Param.FPS]?.disabled = on
         if (!on) timecode.text = "00:00:00:00"
         refreshClipLabel()
@@ -873,6 +1001,88 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             val bmp = try { contentResolver.loadThumbnail(uri, Size(192, 192), null) } catch (_: Throwable) { null }
             runOnUiThread { if (bmp != null) thumb.setImageBitmap(bmp) else thumb.setImageDrawable(null) }
         }.start()
+    }
+
+    // ================================================================ galeria e LUTs
+
+    private fun openGallery() {
+        closeDial()
+        closeSettings()
+        if (!askedMedia && !granted(Manifest.permission.READ_MEDIA_VIDEO)) {
+            askedMedia = true
+            requestPermissions(arrayOf(Manifest.permission.READ_MEDIA_VIDEO), REQ_MEDIA)
+        }
+        gallery.open()
+    }
+
+    private fun importLut() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+        try {
+            startActivityForResult(i, REQ_LUT)
+        } catch (_: Throwable) {
+            overlay.flash("NÃO ACHEI UM SELETOR DE ARQUIVOS")
+        }
+    }
+
+    private fun loadSelectedLut() {
+        val name = settings.lutName
+        if (name == null) {
+            currentLut = null
+            engine?.setLut(null)
+            refreshStatus()
+            return
+        }
+        Thread {
+            val lut = try { lutStore.load(name) } catch (_: Throwable) { null }
+            runOnUiThread {
+                if (lut == null) {
+                    settings.lutName = null
+                    settings.save()
+                    overlay.flash("LUT NÃO ENCONTRADA")
+                }
+                currentLut = lut
+                engine?.setLut(lut)
+                refreshStatus()
+            }
+        }.start()
+    }
+
+    private fun selectLut(name: String?) {
+        if (recording && settings.lutBurn) {
+            overlay.flash("PARE A GRAVAÇÃO PARA TROCAR A LUT")
+            return
+        }
+        settings.lutName = name
+        settings.save()
+        if (!settings.lut) {
+            settings.lut = true
+            pushMonitor()
+            refreshToggles()
+        }
+        loadSelectedLut()
+        buildSettings()
+    }
+
+    @Deprecated("Activity.onActivityResult")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_LUT) {
+            val uri = data?.data
+            if (resultCode != RESULT_OK || uri == null) return
+            Thread {
+                try {
+                    val name = lutStore.import(uri)
+                    runOnUiThread {
+                        overlay.flash("LUT IMPORTADA · $name")
+                        selectLut(name)
+                    }
+                } catch (t: Throwable) {
+                    runOnUiThread { Toast.makeText(this, "LUT inválida: ${t.message}", Toast.LENGTH_LONG).show() }
+                }
+            }.start()
+            return
+        }
+        gallery.onActivityResult(requestCode, resultCode)
     }
 
     // ================================================================ menu
@@ -971,10 +1181,48 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             settings.shutterAngle = i == 0
         }
 
-        section(column, "CLIPES")
+        section(column, "LUTS")
+        row(column, "Aplicar LUT em", listOf("SÓ MONITOR", "MONITOR + ARQUIVO"), if (settings.lutBurn) 1 else 0, true) { i ->
+            settings.lutBurn = i == 1
+        }
+        lutItem(column, "REC.709 INTERNA", null)
+        for (n in lutStore.list()) lutItem(column, n, n)
+        column.addView(
+            text("+ IMPORTAR LUT (.CUBE)", 11f, Ui.AMBER, Ui.COND, 0.16f).apply {
+                background = outline(6f, Ui.AMBER)
+                setPadding(dpi(12), dpi(8), dpi(12), dpi(8))
+                setOnClickListener { importLut() }
+            },
+            LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dpi(10) }
+        )
         column.addView(
             text(
-                "Os clipes vão para Movies/AppleLogCam com nome de rolo e clipe (A001C001…). " +
+                "A LUT recebe o sinal do perfil escolhido (Apple Log, HLG ou Rec.709), então use LUTs feitas para esse perfil. " +
+                    "Em \"Monitor + arquivo\" o clipe sai com a LUT aplicada e marcado como Rec.709.",
+                12f, Ui.DIM, Ui.COND_REG, 0.02f
+            ).apply { setLineSpacing(0f, 1.25f) },
+            LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dpi(10) }
+        )
+
+        section(column, "CLIPES")
+        val folderRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpi(9), 0, dpi(9))
+        }
+        val folderName = if (settings.recordFolder.isEmpty()) "SEM PASTA" else settings.recordFolder
+        folderRow.addView(text("Pasta de gravação", 14f, Ui.CREAM, Ui.COND_REG, 0.02f), LinearLayout.LayoutParams(0, WRAP, 1f))
+        folderRow.addView(text(folderName, 11f, Ui.AMBER, Ui.MONO_BOLD, 0.04f))
+        folderRow.addView(text("GALERIA", 11f, Ui.CREAM, Ui.COND, 0.16f).apply {
+            background = outline(6f)
+            setPadding(dpi(12), dpi(7), dpi(12), dpi(7))
+            setOnClickListener { openGallery() }
+        }, LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dpi(10) })
+        column.addView(folderRow)
+        column.addView(
+            text(
+                "Os clipes vão para Movies/AppleLogCam/<pasta> com nome de rolo e clipe (A001C001…). " +
+                    "Na galeria, toque longo numa pasta escolhe onde gravar, renomeia ou apaga. " +
                     "No Apple Log o arquivo sai marcado como BT.2020 HLG: no editor, defina o espaço de cor de entrada " +
                     "como Apple Log (Rec.2020). O HLG10 do sensor alimenta a curva, então a faixa dinâmica é a do Pixel.",
                 12f, Ui.DIM, Ui.COND_REG, 0.02f
@@ -994,6 +1242,34 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         column.addView(reset, LinearLayout.LayoutParams(WRAP, WRAP).apply { topMargin = dpi(12) })
     }
 
+    private fun lutItem(column: LinearLayout, label: String, name: String?) {
+        val sel = settings.lutName == name
+        val r = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dpi(8), 0, dpi(8))
+            setOnClickListener { selectLut(name) }
+        }
+        r.addView(text(if (sel) "●" else "○", 13f, if (sel) Ui.AMBER else Ui.DIM, Ui.MONO, 0f), LinearLayout.LayoutParams(dpi(24), WRAP))
+        r.addView(text(label, 13f, if (sel) Ui.AMBER else Ui.CREAM, Ui.MONO, 0.02f), LinearLayout.LayoutParams(0, WRAP, 1f))
+        if (name != null) {
+            r.addView(text("✕", 15f, Ui.DIM, Ui.COND, 0f).apply {
+                setPadding(dpi(14), dpi(4), dpi(6), dpi(4))
+                setOnClickListener {
+                    AlertDialog.Builder(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                        .setTitle("Remover a LUT \"$name\"?")
+                        .setPositiveButton("REMOVER") { _, _ ->
+                            lutStore.delete(name)
+                            if (settings.lutName == name) selectLut(null) else buildSettings()
+                        }
+                        .setNegativeButton("CANCELAR", null)
+                        .show()
+                }
+            })
+        }
+        column.addView(r)
+    }
+
     private fun section(column: LinearLayout, title: String) {
         column.addView(text(title, 11f, Ui.AMBER, Ui.COND, 0.3f), LinearLayout.LayoutParams(WRAP, WRAP).apply {
             topMargin = dpi(22)
@@ -1010,12 +1286,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         needsStandby: Boolean,
         onSelect: (Int) -> Unit
     ) {
+        // Em pé não cabe rótulo e opções na mesma linha: as opções descem e rolam na horizontal.
+        val portrait = root.height > root.width
         val r = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = if (portrait) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+            gravity = if (portrait) Gravity.START else Gravity.CENTER_VERTICAL
             setPadding(0, dpi(9), 0, dpi(9))
         }
-        r.addView(text(label, 14f, Ui.CREAM, Ui.COND_REG, 0.02f), LinearLayout.LayoutParams(0, WRAP, 1f))
+        r.addView(
+            text(label, 14f, Ui.CREAM, Ui.COND_REG, 0.02f),
+            if (portrait) LinearLayout.LayoutParams(WRAP, WRAP).apply { bottomMargin = dpi(6) }
+            else LinearLayout.LayoutParams(0, WRAP, 1f)
+        )
         val seg = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val views = ArrayList<TextView>()
         fun style(sel: Int) {
@@ -1046,13 +1328,16 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
             seg.addView(v, LinearLayout.LayoutParams(WRAP, WRAP).apply { leftMargin = dpi(4) })
         }
         style(selected)
-        r.addView(seg)
+        val scroller = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
+        scroller.addView(seg)
+        r.addView(scroller, LinearLayout.LayoutParams(WRAP, WRAP))
         column.addView(r)
     }
 
     // ================================================================ atualização da tela
 
     private fun refreshAll() {
+        refreshVertBtn()
         refreshChips()
         refreshToggles()
         refreshStatus()
@@ -1125,7 +1410,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
     private fun refreshStatus() {
         val inf = info
         val res = if (size.height >= 2160) "4K UHD" else "HD ${size.height}"
-        statusLine1.text = "$res · ${fps}P · ${settings.profile.label} · HEVC 10-BIT · ${settings.bitrateMbps} Mb/s"
+        val burn = settings.lutBurn && currentLut != null
+        val look = if (burn) "${settings.profile.label} + LUT" else settings.profile.label
+        val shape = if (settings.vertical) " 9:16" else ""
+        statusLine1.text = "$res$shape · ${fps}P · $look · HEVC 10-BIT · ${settings.bitrateMbps} Mb/s"
         val free = try { StatFs(Environment.getExternalStorageDirectory().path).availableBytes } catch (_: Throwable) { 0L }
         val bps = settings.bitrateMbps * 1_000_000L + 192_000L
         val minutes = free * 8L / bps / 60L
@@ -1143,7 +1431,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
     }
 
     private fun refreshClipLabel() {
-        clipLabel.text = if (recording) "${clipName()} · GRAVANDO" else "PRÓXIMO ${clipName()}"
+        val folder = if (settings.recordFolder.isEmpty()) "" else " · ${settings.recordFolder.uppercase()}"
+        clipLabel.text = if (recording) "${clipName()} · GRAVANDO$folder" else "PRÓXIMO ${clipName()}$folder"
     }
 
     private fun formatTc(ns: Long): String {
@@ -1248,6 +1537,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, CaptureEngine.Listener 
         settings.save()
         loadThumb()
         refreshClipLabel()
+        if (gallery.isOpen) gallery.reload()
         overlay.flash("SALVO · $name")
     }
 }

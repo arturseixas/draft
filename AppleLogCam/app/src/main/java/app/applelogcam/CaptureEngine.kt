@@ -30,7 +30,14 @@ data class MonitorOpts(
     val magnify: Float = 1f
 )
 
-class RecordConfig(val name: String, val profile: Profile, val bitrate: Int, val audio: Boolean)
+class RecordConfig(
+    val name: String,
+    val profile: Profile,
+    val bitrate: Int,
+    val audio: Boolean,
+    val folder: String,
+    val burnLut: Boolean
+)
 
 /**
  * Camera2 -> SurfaceTexture -> shader -> monitor na tela + encoder HEVC Main10.
@@ -76,6 +83,7 @@ class CaptureEngine(private val context: Context, private val listener: Listener
 
     @Volatile var monitor = MonitorOpts()
     @Volatile var profile = Profile.APPLE_LOG
+    private var currentLut: CubeLut? = null
 
     @Volatile private var displayDeg = 0
     private val displayManager = context.getSystemService(DisplayManager::class.java)
@@ -121,6 +129,7 @@ class CaptureEngine(private val context: Context, private val listener: Listener
 
                 val r = LogRenderer()
                 renderer = r
+                currentLut?.let { r.setLut(it) }
                 val st = SurfaceTexture(r.texId)
                 st.setOnFrameAvailableListener({ drawFrame() }, gl)
                 surfaceTexture = st
@@ -205,6 +214,20 @@ class CaptureEngine(private val context: Context, private val listener: Listener
 
     fun stopRecording() {
         gl.post { finishRecording() }
+    }
+
+    /** Carrega (ou remove, com null) a LUT importada. Vale para o monitor e, se pedido, para o arquivo. */
+    fun setLut(lut: CubeLut?) {
+        gl.post {
+            currentLut = lut
+            val r = renderer ?: return@post
+            try {
+                egl?.let { e -> eglPreview?.let { e.makeCurrent(it) } }
+                r.setLut(lut)
+            } catch (t: Throwable) {
+                Log.w(TAG, "setLut: ${t.message}")
+            }
+        }
     }
 
     fun audioLevels(): FloatArray {
@@ -294,7 +317,10 @@ class CaptureEngine(private val context: Context, private val listener: Listener
             val chh = if (swap) sz.width else sz.height
 
             val m = monitor
-            previewParams.out = if (m.lut) LogRenderer.OUT_709 else LogRenderer.outFor(profile)
+            val prof = LogRenderer.outFor(profile)
+            previewParams.useLut = m.lut && r.hasLut
+            previewParams.lutIn = prof
+            previewParams.out = if (m.lut) LogRenderer.OUT_709 else prof
             previewParams.tools = true
             previewParams.zebra = m.zebra
             previewParams.peaking = m.peaking
@@ -381,7 +407,7 @@ class CaptureEngine(private val context: Context, private val listener: Listener
             val values = ContentValues().apply {
                 put(MediaStore.Video.Media.DISPLAY_NAME, cfg.name + ".mp4")
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
-                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/AppleLogCam")
+                put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/AppleLogCam/" + if (cfg.folder.isEmpty()) "" else "${cfg.folder}/")
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
             val uri = context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
@@ -400,7 +426,8 @@ class CaptureEngine(private val context: Context, private val listener: Listener
             val s = MuxerSink(muxer, if (audioEnc != null) 2 else 1)
             sink = s
 
-            val sdr = cfg.profile == Profile.REC709
+            val burn = cfg.burnLut && renderer?.hasLut == true
+            val sdr = cfg.profile == Profile.REC709 || burn
             val venc = VideoEncoder(
                 encW, encH, fps, cfg.bitrate,
                 if (sdr) MediaFormat.COLOR_STANDARD_BT709 else MediaFormat.COLOR_STANDARD_BT2020,
@@ -411,6 +438,8 @@ class CaptureEngine(private val context: Context, private val listener: Listener
             eglEncoder = e.createWindowSurface(venc.inputSurface, tagHlg = !sdr)
 
             recordParams.out = LogRenderer.outFor(cfg.profile)
+            recordParams.useLut = burn
+            recordParams.lutIn = LogRenderer.outFor(cfg.profile)
             recordParams.tools = false
             recordParams.mag = 1f
 
