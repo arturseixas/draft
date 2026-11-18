@@ -5,6 +5,9 @@ on:
     branches: [apple-log-cam]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -46,3 +49,16 @@ jobs:
         with:
           name: AppleLogCam-debug-apk
           path: AppleLogCam/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish APK as pre-release (direct download on the phone)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          cp AppleLogCam/app/build/outputs/apk/debug/app-debug.apk AppleLogCam-debug.apk
+          gh release delete apple-log-cam-latest --cleanup-tag --yes || true
+          gh release create apple-log-cam-latest AppleLogCam-debug.apk \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+            --title "Apple Log Cam (debug APK)" \
+            --notes "Debug APK built from commit $GITHUB_SHA"
