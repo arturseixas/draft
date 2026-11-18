@@ -12,6 +12,8 @@ class VideoEncoder(
     height: Int,
     fps: Int,
     bitrate: Int,
+    private val colorStandard: Int,
+    private val colorTransfer: Int,
     private val sink: MuxerSink
 ) {
     private var codec: MediaCodec
@@ -44,11 +46,10 @@ class VideoEncoder(
                 setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-                // Matriz e primárias BT.2020. A transferência fica marcada como HLG porque o MediaCodec
-                // não tem rótulo para Apple Log; ajuste o espaço de cor de entrada no editor (veja o README).
-                setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
+                // Apple Log não tem rótulo no MediaCodec: sai marcado como BT.2020 + HLG (veja o README).
+                setInteger(MediaFormat.KEY_COLOR_STANDARD, colorStandard)
                 setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-                setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_HLG)
+                setInteger(MediaFormat.KEY_COLOR_TRANSFER, colorTransfer)
             }
             c.configure(f, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             return c
@@ -68,7 +69,7 @@ class VideoEncoder(
             when {
                 idx == MediaCodec.INFO_TRY_AGAIN_LATER -> {
                     if (!endOfStream) return
-                    if (++emptyReads > 300) {   // ~3 s
+                    if (++emptyReads > 300) {
                         Log.w(LogRenderer.TAG, "Encoder não entregou EOS a tempo")
                         return
                     }

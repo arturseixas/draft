@@ -10,6 +10,8 @@ import android.media.MediaRecorder
 import android.os.SystemClock
 import android.util.Log
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.abs
 
 /** Microfone -> AAC-LC 48 kHz estéreo. O PTS usa elapsedRealtimeNanos, a mesma base dos frames da câmera. */
 class AudioEncoder private constructor(
@@ -20,6 +22,12 @@ class AudioEncoder private constructor(
     private lateinit var sink: MuxerSink
     private var baseNsProvider: () -> Long = { -1L }
     @Volatile private var stopRequested = false
+
+    /** Pico do último bloco por canal, de 0 a 1 (para o medidor). */
+    @Volatile var levelL = 0f
+        private set
+    @Volatile var levelR = 0f
+        private set
     private var track = -1
     private val info = MediaCodec.BufferInfo()
 
@@ -35,7 +43,7 @@ class AudioEncoder private constructor(
                     SAMPLE_RATE, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT
                 )
                 val record = AudioRecord.Builder()
-                    .setAudioSource(MediaRecorder.AudioSource.MIC)
+                    .setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
                     .setAudioFormat(
                         AudioFormat.Builder()
                             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -88,7 +96,7 @@ class AudioEncoder private constructor(
         try {
             codec.start()
             record.startRecording()
-            val pcm = ByteBuffer.allocateDirect(4096)
+            val pcm = ByteBuffer.allocateDirect(4096).order(ByteOrder.nativeOrder())
             var framesRead = 0L
             var startNs = -1L
 
@@ -97,6 +105,16 @@ class AudioEncoder private constructor(
                 val n = record.read(pcm, pcm.capacity())
                 if (n <= 0) continue
                 val frames = n / BYTES_PER_FRAME
+                var pl = 0
+                var pr = 0
+                for (i in 0 until frames) {
+                    val l = abs(pcm.getShort(i * 4).toInt())
+                    val r = abs(pcm.getShort(i * 4 + 2).toInt())
+                    if (l > pl) pl = l
+                    if (r > pr) pr = r
+                }
+                levelL = pl / 32768f
+                levelR = pr / 32768f
                 if (startNs < 0) startNs = SystemClock.elapsedRealtimeNanos() - framesToNs(frames.toLong())
                 val ptsNs = startNs + framesToNs(framesRead)
                 framesRead += frames

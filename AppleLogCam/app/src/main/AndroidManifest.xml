@@ -10,6 +10,7 @@
     <application
         android:allowBackup="false"
         android:label="Apple Log Cam"
+        android:icon="@mipmap/ic_launcher"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
 
         <activity

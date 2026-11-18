@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lente: anel creme, anel interno fino, ponto âmbar e marca de REC -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#EDE6D6" android:strokeWidth="5" android:fillColor="#00000000"
+        android:pathData="M28,54a26,26 0 1,0 52,0a26,26 0 1,0 -52,0" />
+    <path android:strokeColor="#66EDE6D6" android:strokeWidth="1.5" android:fillColor="#00000000"
+        android:pathData="M38,54a16,16 0 1,0 32,0a16,16 0 1,0 -32,0" />
+    <path android:fillColor="#FFB000"
+        android:pathData="M48,54a6,6 0 1,0 12,0a6,6 0 1,0 -12,0" />
+    <path android:fillColor="#E5322D"
+        android:pathData="M72,34a4,4 0 1,0 8,0a4,4 0 1,0 -8,0" />
+</vector>
