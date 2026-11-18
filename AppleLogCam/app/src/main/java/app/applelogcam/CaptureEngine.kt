@@ -3,6 +3,7 @@ package app.applelogcam
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.SurfaceTexture
+import android.hardware.display.DisplayManager
 import android.net.Uri
 import android.opengl.EGLSurface
 import android.opengl.GLES20
@@ -49,7 +50,20 @@ class CaptureEngine(private val context: Context, private val listener: Listener
     private var eglPreview: EGLSurface? = null
     private var surfaceTexture: SurfaceTexture? = null
     private var cameraSurface: Surface? = null
-    private val texMatrix = FloatArray(16)
+    private val previewMatrix = FloatArray(16)
+    private val recordMatrix = FloatArray(16)
+
+    // Rotação da tela (0/90/180/270). A gravação congela a rotação do momento em que começou.
+    @Volatile private var displayDeg = 0
+    private var recordRotation = 0
+    private var encW = 0
+    private var encH = 0
+    private val displayManager = context.getSystemService(DisplayManager::class.java)
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) { displayDeg = currentDisplayDegrees() }
+    }
 
     // Gravação
     @Volatile private var recording = false
@@ -75,6 +89,8 @@ class CaptureEngine(private val context: Context, private val listener: Listener
                 val ch = camera.choose()
                     ?: throw IllegalStateException("Nenhuma câmera traseira com HLG10 (10 bits) encontrada")
                 choice = ch
+                displayDeg = currentDisplayDegrees()
+                displayManager?.registerDisplayListener(displayListener, gl)
 
                 val e = EglCore()
                 egl = e
@@ -113,6 +129,7 @@ class CaptureEngine(private val context: Context, private val listener: Listener
         val latch = CountDownLatch(1)
         gl.post {
             try {
+                displayManager?.unregisterDisplayListener(displayListener)
                 finishRecording()
                 camera.close()
                 cameraSurface?.release()
@@ -158,7 +175,13 @@ class CaptureEngine(private val context: Context, private val listener: Listener
         try {
             e.makeCurrent(pv)
             st.updateTexImage()
-            st.getTransformMatrix(texMatrix)
+            // A matriz do SurfaceTexture já gira o frame para o retrato natural do celular, o que deixava a
+            // imagem de lado no app em paisagem. Montamos a nossa a partir do buffer cru do sensor.
+            val previewRotation = cameraRotation(ch, displayDeg)
+            buildTexMatrix(previewRotation, previewMatrix)
+            val swap = previewRotation % 180 != 0
+            val cw = if (swap) ch.size.height else ch.size.width
+            val chh = if (swap) ch.size.width else ch.size.height
             val ts = st.timestamp
             val fullRange = readFullRange(st)
 
@@ -170,13 +193,13 @@ class CaptureEngine(private val context: Context, private val listener: Listener
                 GLES20.glClearColor(0f, 0f, 0f, 1f)
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                 var vw = pw
-                var vh = pw * ch.size.height / ch.size.width
+                var vh = pw * chh / cw
                 if (vh > ph) {
                     vh = ph
-                    vw = ph * ch.size.width / ch.size.height
+                    vw = ph * cw / chh
                 }
                 val mode = if (monitorLog) LogRenderer.MODE_APPLE_LOG else LogRenderer.MODE_MONITOR_709
-                r.draw(texMatrix, mode, 1f, fullRange, (pw - vw) / 2, (ph - vh) / 2, vw, vh)
+                r.draw(previewMatrix, mode, 1f, fullRange, (pw - vw) / 2, (ph - vh) / 2, vw, vh)
                 e.swap(pv)
             }
 
@@ -185,7 +208,7 @@ class CaptureEngine(private val context: Context, private val listener: Listener
             if (recording && enc != null) {
                 if (baseTsNs < 0) baseTsNs = ts
                 e.makeCurrent(enc)
-                r.draw(texMatrix, LogRenderer.MODE_APPLE_LOG, 1f, fullRange, 0, 0, ch.size.width, ch.size.height)
+                r.draw(recordMatrix, LogRenderer.MODE_APPLE_LOG, 1f, fullRange, 0, 0, encW, encH)
                 e.setPresentationTime(enc, ts - baseTsNs)
                 e.swap(enc)
                 videoEncoder?.drain(false)
@@ -235,13 +258,19 @@ class CaptureEngine(private val context: Context, private val listener: Listener
             outputUri = uri
 
             val muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            muxer.setOrientationHint(orientationHint(ch))
+            // A imagem já sai em pé no próprio frame: sem metadado de rotação no MP4.
+            muxer.setOrientationHint(0)
 
             audioEnc = if (withAudio) AudioEncoder.create() else null
             val s = MuxerSink(muxer, if (audioEnc != null) 2 else 1)
             sink = s
 
-            val venc = VideoEncoder(ch.size.width, ch.size.height, ch.fps, BITRATE, s)
+            recordRotation = cameraRotation(ch, displayDeg)
+            buildTexMatrix(recordRotation, recordMatrix)
+            val swap = recordRotation % 180 != 0
+            encW = if (swap) ch.size.height else ch.size.width
+            encH = if (swap) ch.size.width else ch.size.height
+            val venc = VideoEncoder(encW, encH, ch.fps, BITRATE, s)
             videoEncoder = venc
             eglEncoder = e.createWindowSurface(venc.inputSurface, tagHlg = true)
 
@@ -304,12 +333,37 @@ class CaptureEngine(private val context: Context, private val listener: Listener
         }
     }
 
-    /** Rotação (graus horários) que o player precisa aplicar para o vídeo ficar em pé na orientação atual. */
-    private fun orientationHint(ch: CameraController.Choice): Int {
+    private fun currentDisplayDegrees(): Int {
         val rotation = try { context.display?.rotation ?: 0 } catch (_: Throwable) { 0 }
-        val degrees = rotation * 90
-        return (ch.sensorOrientation - degrees + 360) % 360
+        return rotation * 90
     }
+
+    /** Graus (sentido horário) para girar o buffer cru do sensor e deixá-lo em pé na tela. Câmera traseira. */
+    private fun cameraRotation(ch: CameraController.Choice, displayDegrees: Int): Int =
+        (ch.sensorOrientation - displayDegrees + 360) % 360
+
+    /**
+     * Matriz (column-major) que leva a coordenada da tela (u, v; v para cima) à coordenada da textura do
+     * buffer cru (s, t; t = 0 é a primeira linha, o topo da imagem), girando a imagem [rotation] graus no
+     * sentido horário.
+     */
+    private fun buildTexMatrix(rotation: Int, m: FloatArray) {
+        java.util.Arrays.fill(m, 0f)
+        m[10] = 1f
+        m[15] = 1f
+        // s = a*u + b*v + c ; t = d*u + e*v + f
+        val (a, b, c, d, e, f) = when (rotation) {
+            90 -> Six(0f, -1f, 1f, -1f, 0f, 1f)    // s = 1 - v, t = 1 - u
+            180 -> Six(-1f, 0f, 1f, 0f, 1f, 0f)    // s = 1 - u, t = v
+            270 -> Six(0f, 1f, 0f, 1f, 0f, 0f)     // s = v,     t = u
+            else -> Six(1f, 0f, 0f, 0f, -1f, 1f)   // s = u,     t = 1 - v
+        }
+        m[0] = a; m[1] = d
+        m[4] = b; m[5] = e
+        m[12] = c; m[13] = f
+    }
+
+    private data class Six(val a: Float, val b: Float, val c: Float, val d: Float, val e: Float, val f: Float)
 
     private fun postError(msg: String) {
         main.post { listener.onError(msg) }
