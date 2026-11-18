@@ -26,7 +26,19 @@ jobs:
           gradle-version: 8.9
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleDebug --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Publish error tail as annotation
+        if: failure()
+        shell: bash
+        run: |
+          grep -E "^e: |^w: .*(Unresolved|Type mismatch)|error:|What went wrong|Could not|Execution failed|FAILURE|Caused by|not found|SDK" "$RUNNER_TEMP/build.log" | head -n 40 | cut -c1-400 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"}1' > "$RUNNER_TEMP/msg.txt"
+          echo "::error title=GradleErrors::$(cat "$RUNNER_TEMP/msg.txt")"
+          tail -n 25 "$RUNNER_TEMP/build.log" | cut -c1-300 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"}1' > "$RUNNER_TEMP/tail.txt"
+          echo "::error title=GradleTail::$(cat "$RUNNER_TEMP/tail.txt")"
 
       - uses: actions/upload-artifact@v4
         with:
